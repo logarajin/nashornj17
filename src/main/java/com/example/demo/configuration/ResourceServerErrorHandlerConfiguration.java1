@@ -1,0 +1,83 @@
+package com.wipro.obp.account.access.consents.config;
+
+import java.io.IOException;
+import java.nio.charset.StandardCharsets;
+import java.util.Collections;
+
+import jakarta.servlet.ServletException;
+import jakarta.servlet.http.HttpServletRequest;
+import jakarta.servlet.http.HttpServletResponse;
+
+import org.springframework.http.HttpStatus;
+import org.springframework.http.MediaType;
+import org.springframework.security.access.AccessDeniedException;
+import org.springframework.security.core.AuthenticationException;
+import org.springframework.security.web.AuthenticationEntryPoint;
+import org.springframework.security.web.access.AccessDeniedHandler;
+import org.springframework.security.web.authentication.AuthenticationFailureHandler;
+import org.springframework.stereotype.Component;
+import org.springframework.web.util.HtmlUtils;
+
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.wipro.obp.account.access.consents.model.OBError1;
+import com.wipro.obp.account.access.consents.model.OBErrorCode;
+import com.wipro.obp.account.access.consents.model.OBErrorResponse1;
+import com.wipro.obp.account.access.consents.util.Constants;
+import com.wipro.obp.account.access.consents.util.CommonUtils;
+
+import lombok.extern.slf4j.Slf4j;
+
+@Slf4j
+@Component("resourceServerErrorHandlerConfiguration")
+public class ResourceServerErrorHandlerConfiguration implements AuthenticationEntryPoint,
+AccessDeniedHandler, AuthenticationFailureHandler {
+
+private static final ObjectMapper objectMapper = new ObjectMapper();
+
+@Override
+public void commence(HttpServletRequest httpServletRequest,
+HttpServletResponse httpServletResponse, AuthenticationException authenticationException)
+throws IOException, ServletException {
+getCustomError(httpServletResponse, authenticationException);
+}
+
+private static void getCustomError(
+HttpServletResponse httpServletResponse,
+Exception e) throws IOException {
+String errorId = CommonUtils.getErrorId();
+log.error(errorId, e.getLocalizedMessage(), e);
+
+OBError1 obError1 = new OBError1();
+obError1.setErrorCode(OBErrorCode.UK_OBIE_HEADER_INVALID.toString());
+obError1.setMessage(Constants.ERROR_INVALID_TOKEN);
+obError1.setUrl(Constants.ERROR_URL_ENDPOINTS);
+
+HttpStatus httpStatus = HttpStatus.UNAUTHORIZED;
+
+OBErrorResponse1 obErrorResponse1 = new OBErrorResponse1();
+obErrorResponse1.setId(errorId);
+obErrorResponse1.setCode(httpStatus.toString());
+obErrorResponse1.setErrors(Collections.singletonList(obError1));
+obErrorResponse1.setMessage(Constants.ERROR_INVALID_TOKEN);
+
+httpServletResponse.setContentType(MediaType.APPLICATION_JSON_VALUE);
+httpServletResponse.setStatus(HttpServletResponse.SC_UNAUTHORIZED);
+httpServletResponse.getOutputStream().println(HtmlUtils.htmlEscape(objectMapper.writeValueAsString(obErrorResponse1),
+StandardCharsets.UTF_8.name()).replace("&quot;", "\""));
+}
+
+@Override
+public void handle(HttpServletRequest httpServletRequest,
+HttpServletResponse httpServletResponse, AccessDeniedException accessDeniedException)
+throws IOException, ServletException {
+getCustomError(httpServletResponse, accessDeniedException);
+}
+
+@Override
+public void onAuthenticationFailure(HttpServletRequest httpServletRequest,
+HttpServletResponse httpServletResponse, AuthenticationException authenticationException)
+throws IOException, ServletException {
+getCustomError(httpServletResponse, authenticationException);
+}
+
+}

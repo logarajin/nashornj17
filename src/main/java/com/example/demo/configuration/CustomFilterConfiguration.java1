@@ -1,0 +1,238 @@
+package com.example.demo.configuration;
+
+import java.io.IOException;
+import java.nio.charset.StandardCharsets;
+import java.time.format.DateTimeFormatter;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.Enumeration;
+import java.util.List;
+import java.util.Locale;
+import java.util.UUID;
+
+import javax.servlet.Filter;
+import javax.servlet.FilterChain;
+import javax.servlet.FilterConfig;
+import javax.servlet.ServletException;
+import javax.servlet.ServletRequest;
+import javax.servlet.ServletResponse;
+import javax.servlet.http.HttpServletRequest;
+import javax.servlet.http.HttpServletResponse;
+
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.core.Ordered;
+import org.springframework.core.annotation.Order;
+import org.springframework.http.HttpHeaders;
+import org.springframework.http.HttpStatus;
+import org.springframework.http.MediaType;
+import org.springframework.stereotype.Component;
+import org.springframework.util.StringUtils;
+import org.springframework.web.util.HtmlUtils;
+
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.wipro.obp.account.access.consents.exception.AccountAccessConsentsException;
+import com.wipro.obp.account.access.consents.model.OBError1;
+import com.wipro.obp.account.access.consents.model.OBErrorCode;
+import com.wipro.obp.account.access.consents.model.OBErrorResponse1;
+import com.wipro.obp.account.access.consents.util.Constants;
+import com.wipro.obp.account.access.consents.util.CommonUtils;
+
+import lombok.extern.slf4j.Slf4j;
+
+@Slf4j
+@Component
+@Order(Ordered.HIGHEST_PRECEDENCE)
+public class CustomFilterConfiguration implements Filter {
+
+@Value("${allowed.origin.headers}")
+private List<String> allowedOriginHeaders;
+
+private static final ObjectMapper objectMapper = new ObjectMapper();
+private static final List<String> TRACE_HEADERS;
+
+static {
+List<String> arrayList = new ArrayList<>();
+arrayList.add("x-request-id");
+arrayList.add("x-b3-traceid");
+arrayList.add("x-b3-spanid");
+arrayList.add("x-b3-parentspanid");
+arrayList.add("x-b3-sampled");
+arrayList.add("x-b3-flags");
+arrayList.add("x-ot-span-context");
+arrayList.add("x-cloud-trace-context");
+arrayList.add("x-obp-transaction-id");
+
+TRACE_HEADERS = Collections.unmodifiableList(arrayList);
+}
+
+@Override
+public void doFilter(ServletRequest req, ServletResponse res, FilterChain chain) throws IOException, ServletException {
+HttpServletRequest httpServletRequest = (HttpServletRequest) req;
+HttpServletResponse httpServletResponse = (HttpServletResponse) res;
+
+// Enabling CORS for all
+addCorsHeaders(httpServletRequest, httpServletResponse, allowedOriginHeaders);
+
+//Adding security headers in response
+addSecurityHeaders(httpServletResponse);
+
+try {
+// Adding the trace headers for distributed tracing using Istio
+Enumeration<String> headerNames = httpServletRequest.getHeaderNames();
+while (headerNames.hasMoreElements()) {
+String headerName = headerNames.nextElement();
+if (TRACE_HEADERS.contains(headerName)) {
+String headerValue = httpServletRequest.getHeader(headerName);
+httpServletResponse.setHeader(StringUtils.trimAllWhitespace(headerName),
+StringUtils.trimAllWhitespace(headerValue));
+}
+}
+
+validateParameterPageSize(httpServletRequest);
+validateHeaderFapiAuthDate(httpServletRequest);
+validateHeaderFapiInteractionId(httpServletRequest, httpServletResponse);
+validateHeaderIdempotencyKey(httpServletRequest);
+
+chain.doFilter(httpServletRequest, httpServletResponse);
+
+} catch (AccountAccessConsentsException e) {
+setResponseError(httpServletResponse, e);
+}
+
+}
+
+private static void addCorsHeaders(HttpServletRequest httpServletRequest,
+HttpServletResponse httpServletResponse, List<String> allowedOriginHeaders) {
+List<String> accessControlAllowHeaders = new ArrayList<>();
+accessControlAllowHeaders.add(HttpHeaders.AUTHORIZATION);
+accessControlAllowHeaders.add(Constants.HEADER_X_FAPI_AUTH_DATE);
+accessControlAllowHeaders.add(Constants.HEADER_X_FAPI_CUSTOMER_IP_ADDRESS);
+accessControlAllowHeaders.add(Constants.HEADER_X_FAPI_INTERACTION_ID);
+accessControlAllowHeaders.add(Constants.HEADER_X_IDEMPOTENCY_KEY);
+accessControlAllowHeaders.add(HttpHeaders.CONTENT_TYPE);
+
+
+httpServletResponse.setHeader(StringUtils.trimAllWhitespace(HttpHeaders.ACCESS_CONTROL_ALLOW_ORIGIN),
+StringUtils.trimAllWhitespace("*/*"));
+//setAccessControlAllowOriginHeader(httpServletRequest, httpServletResponse, allowedOriginHeaders);
+httpServletResponse.setHeader(StringUtils.trimAllWhitespace(HttpHeaders.ACCESS_CONTROL_ALLOW_METHODS),
+StringUtils.trimAllWhitespace("GET, POST, PUT, OPTIONS, DELETE"));
+httpServletResponse.setHeader(StringUtils.trimAllWhitespace(HttpHeaders.ACCESS_CONTROL_ALLOW_HEADERS),
+StringUtils.trimAllWhitespace(String.join(", ", accessControlAllowHeaders)));
+httpServletResponse.setHeader(StringUtils.trimAllWhitespace(HttpHeaders.ACCESS_CONTROL_MAX_AGE),
+StringUtils.trimAllWhitespace("3600"));
+}
+
+private static void setAccessControlAllowOriginHeader(HttpServletRequest httpServletRequest,
+HttpServletResponse httpServletResponse, List<String> allowedOriginHeaders) {
+allowedOriginHeaders.replaceAll(String::trim);
+String origin = httpServletRequest.getHeader(HttpHeaders.ORIGIN);
+
+if (allowedOriginHeaders.contains(origin)) {
+httpServletResponse.setHeader(StringUtils.trimAllWhitespace(HttpHeaders.ACCESS_CONTROL_ALLOW_ORIGIN),
+StringUtils.trimAllWhitespace(origin));
+}
+}
+
+private static void addSecurityHeaders(HttpServletResponse response) {
+response.setHeader(StringUtils.trimAllWhitespace(Constants.HEADER_REFERRER_POLICY),
+StringUtils.trimAllWhitespace("same-origin"));
+response.setHeader(StringUtils.trimAllWhitespace(Constants.HEADER_X_CONTENT_TYPE_OPTIONS),
+StringUtils.trimAllWhitespace("nosniff"));
+response.setHeader(StringUtils.trimAllWhitespace(Constants.HEADER_STRICT_TRANSPORT_SECURITY),
+StringUtils.trimAllWhitespace("max-age=15724800 ; includeSubDomains"));
+response.setHeader(StringUtils.trimAllWhitespace(Constants.HEADER_CACHE_CONTROL),
+StringUtils.trimAllWhitespace("no-cache, no-store, max-age=0, must-revalidate"));
+response.setHeader(StringUtils.trimAllWhitespace(Constants.HEADER_PRAGMA),
+StringUtils.trimAllWhitespace("no-cache"));
+response.setHeader(StringUtils.trimAllWhitespace(Constants.HEADER_EXPIRES),
+StringUtils.trimAllWhitespace("0"));
+}
+
+private static void validateParameterPageSize(HttpServletRequest httpServletRequest) {
+// The page-size if present can have maximum value of 1000
+String pageSize = httpServletRequest.getParameter(Constants.QUERY_PARAM_PAGE_SIZE);
+if (null != pageSize && Integer.parseInt(pageSize) > Constants.MAX_PAGE_SIZE) {
+log.error(Constants.ERROR_MAX_PAGE_SIZE);
+throw new AccountAccessConsentsException(Constants.ERROR_MAX_PAGE_SIZE,
+HttpStatus.UNPROCESSABLE_ENTITY, OBErrorCode.UK_OBIE_FIELD_INVALID);
+}
+}
+
+private static void validateHeaderFapiAuthDate(HttpServletRequest httpServletRequest) {
+// The date time format in compliance with RFC 7231
+DateTimeFormatter dateTimeFormatter = DateTimeFormatter.ofPattern("EEE, dd MMM yyyy HH:mm:ss z", Locale.ENGLISH);
+
+// Validating the x-fapi-auth-date format to match RFC 7231 format if present
+String xFapiAuthDate = httpServletRequest.getHeader(Constants.HEADER_X_FAPI_AUTH_DATE);
+if (StringUtils.hasText(xFapiAuthDate)) {
+try {
+dateTimeFormatter.parse(xFapiAuthDate);
+} catch (Exception e) {
+log.error(Constants.ERROR_AUTH_DATE_FORMAT);
+throw new AccountAccessConsentsException(Constants.ERROR_AUTH_DATE_FORMAT,
+HttpStatus.BAD_REQUEST, OBErrorCode.UK_OBIE_HEADER_INVALID);
+}
+}
+}
+
+private static void validateHeaderFapiInteractionId(HttpServletRequest httpServletRequest,
+HttpServletResponse httpServletResponse) {
+// Adding the x-fapi-interaction-id header to response if present, or create a random UUID
+String xFapiIteractionId = httpServletRequest.getHeader(Constants.HEADER_X_FAPI_INTERACTION_ID);
+if (StringUtils.hasText(xFapiIteractionId)) {
+httpServletResponse.setHeader(StringUtils.trimAllWhitespace(Constants.HEADER_X_FAPI_INTERACTION_ID),
+StringUtils.trimAllWhitespace(xFapiIteractionId));
+} else {
+httpServletResponse.setHeader(StringUtils.trimAllWhitespace(Constants.HEADER_X_FAPI_INTERACTION_ID),
+StringUtils.trimAllWhitespace(UUID.randomUUID().toString()));
+}
+}
+
+private static void validateHeaderIdempotencyKey(HttpServletRequest httpServletRequest) {
+// The x-idempotency-key provided in the header must be at most 40 characters in size
+String xIdempotencyKey = httpServletRequest.getHeader(Constants.HEADER_X_IDEMPOTENCY_KEY);
+if (StringUtils.hasText(xIdempotencyKey)
+&& xIdempotencyKey.length() > Constaconts.IDEMPOTENCY_KEY_SIZE) {
+throw new AccountAccessConsentsException(Constants.ERROR_IDEMPOTENCY_KEY_SIZE,
+HttpStatus.BAD_REQUEST, OBErrorCode.UK_OBIE_HEADER_INVALID);
+}
+}
+
+private static void setResponseError(
+HttpServletResponse httpServletResponse,
+AccountAccessConsentsException accountAccessConsentsException) {
+String errorId = CommonUtils.getErrorId();
+log.error(errorId, accountAccessConsentsException);
+
+try {
+OBError1 obError1 = new OBError1();
+obError1.setErrorCode(accountAccessConsentsException.getObErrorCode().toString());
+obError1.setMessage(accountAccessConsentsException.getMessage());
+obError1.setUrl(Constants.ERROR_URL);
+
+OBErrorResponse1 obErrorResponse1 = new OBErrorResponse1();
+obErrorResponse1.setId(errorId);
+obErrorResponse1.setCode(accountAccessConsentsException.getHttpStatus().toString());
+obErrorResponse1.setErrors(Collections.singletonList(obError1));
+obErrorResponse1.setMessage(accountAccessConsentsException.getMessage());
+
+httpServletResponse.setContentType(MediaType.APPLICATION_JSON_VALUE);
+httpServletResponse.setStatus(accountAccessConsentsException.getHttpStatus().value());
+httpServletResponse.getOutputStream().println(HtmlUtils.htmlEscape(objectMapper.writeValueAsString(obErrorResponse1),
+StandardCharsets.UTF_8.name()).replace("&quot;", "\""));
+} catch (IOException e) {
+log.error("Exception while sending error in http response : ", e);
+}
+}
+
+@Override
+public void destroy() {
+// Can be empty
+}
+
+@Override
+public void init(FilterConfig config) throws ServletException {
+// Can be empty
+}
+}
